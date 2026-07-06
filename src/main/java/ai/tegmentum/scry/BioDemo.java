@@ -30,13 +30,11 @@ import java.util.Objects;
 public final class BioDemo {
 
     private static final String QUERY_PROTEIN = "<http://purl.uniprot.org/uniprot/P68871>";
-    // 0.0 threshold prints every candidate so the reader can see raw scores;
-    // the -Dwf.threshold=... system property overrides it if you want to
-    // filter. Chosen this way because k-mer Jaccard on peptides is a naive
-    // similarity metric and drops even close homologs (e.g. hemoglobin alpha)
-    // below common cutoffs — real BLAST uses substitution matrices for that.
+    // BLASTP bit-score threshold. ~20 is weakly significant, ~50 strongly. The
+    // demo default of 20 keeps distant hemoglobin homologs visible; override
+    // via -Dwf.threshold=... to raise the bar.
     private static final String THRESHOLD_LITERAL =
-            "\"" + System.getProperty("wf.threshold", "0.0")
+            "\"" + System.getProperty("wf.threshold", "20")
                     + "\"^^<http://www.w3.org/2001/XMLSchema#decimal>";
 
     public static void main(final String[] args) throws Exception {
@@ -54,14 +52,13 @@ public final class BioDemo {
     }
 
     private static Path locateWasm() {
-        // Prefer -Dwf.kmer.wasm=... so CI / different checkouts can point at
-        // whatever path they built. Fall back to the in-tree cargo-component
-        // output that `cargo component build --release` produces.
-        final String override = System.getProperty("wf.kmer.wasm");
+        // -Dwf.blastp.wasm=... points at whatever the caller built. Falls
+        // back to the in-tree cargo-component output.
+        final String override = System.getProperty("wf.blastp.wasm");
         if (override != null && !override.isBlank()) {
             return Path.of(override).toAbsolutePath();
         }
-        return Path.of("src/main/rust/kmer_similarity/target/wasm32-wasip1/release/kmer_similarity.wasm")
+        return Path.of("src/main/rust/blastp/target/wasm32-wasip1/release/blastp.wasm")
                 .toAbsolutePath();
     }
 
@@ -92,7 +89,7 @@ public final class BioDemo {
         try (RepositoryConnection conn = repo.getConnection();
              TupleQueryResult result = conn.prepareTupleQuery(query).evaluate()) {
             out.printf("%-42s %-32s %-12s %s%n",
-                    "homolog", "name", "similarity", "co-expressed tissues");
+                    "homolog", "name", "bit-score", "co-expressed tissues");
             out.println("-".repeat(110));
             int rows = 0;
             while (result.hasNext()) {
@@ -100,7 +97,7 @@ public final class BioDemo {
                 out.printf("%-42s %-32s %-12s %s%n",
                         row.getValue("homolog").stringValue(),
                         row.getValue("homologName").stringValue(),
-                        row.getValue("similarity").stringValue(),
+                        row.getValue("bitScore").stringValue(),
                         row.getValue("coexpressedTissueCount").stringValue());
                 rows++;
             }

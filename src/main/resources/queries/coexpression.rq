@@ -1,9 +1,10 @@
 # Bioinformatics use case from Stringer et al. (SCRY, CEUR Vol-1795, paper 30),
 # ported to webfunctions. Given a query protein (hemoglobin beta), find
-# homologs by sequence similarity (kmer_similarity.wasm) and count how many
+# homologs by BLASTP-scored local alignment (blastp.wasm — rust-bio's
+# Smith-Waterman with BLOSUM62 + Karlin-Altschul stats) and count how many
 # tissues each homolog shares with the query.
 #
-# The query protein URI, wasm URL, and similarity threshold are substituted
+# The query protein URI, wasm URL, and bit-score threshold are substituted
 # at run time by BioDemo.java — real SCRY does the same substitution before
 # federating to its Python endpoint.
 
@@ -13,7 +14,7 @@ PREFIX up:   <http://purl.uniprot.org/uniprot/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
 
-SELECT ?homolog ?homologName ?similarity (COUNT(DISTINCT ?sharedTissue) AS ?coexpressedTissueCount)
+SELECT ?homolog ?homologName ?bitScore (COUNT(DISTINCT ?sharedTissue) AS ?coexpressedTissueCount)
 WHERE {
     # Query protein and its sequence.
     ${QUERY_PROTEIN} bio:sequence ?querySeq .
@@ -24,9 +25,12 @@ WHERE {
              bio:sequence ?candidateSeq .
     FILTER (?homolog != ${QUERY_PROTEIN})
 
-    # Score similarity via the wasm component. Returns an xsd:decimal in [0, 1].
-    BIND (xsd:decimal(wf:call(<${WASM_URL}>, ?querySeq, ?candidateSeq)) AS ?similarity)
-    FILTER (?similarity >= ${THRESHOLD})
+    # BLASTP bit score via the wasm component. wf:call in filter form returns
+    # the first output var — blastp exposes bit_score as its first slot, which
+    # is the standard BLAST ranking metric. Scores of ~20 are weakly
+    # significant, ~50 strongly, >100 highly.
+    BIND (xsd:decimal(wf:call(<${WASM_URL}>, ?querySeq, ?candidateSeq)) AS ?bitScore)
+    FILTER (?bitScore >= ${THRESHOLD})
 
     # Tissues co-expressed between query and candidate (may be zero if no
     # tissue overlaps — LEFT-joined-optional-shape would surface those too,
@@ -34,5 +38,5 @@ WHERE {
     ${QUERY_PROTEIN} bio:expressedIn ?sharedTissue .
     ?homolog         bio:expressedIn ?sharedTissue .
 }
-GROUP BY ?homolog ?homologName ?similarity
-ORDER BY DESC(?similarity)
+GROUP BY ?homolog ?homologName ?bitScore
+ORDER BY DESC(?bitScore)

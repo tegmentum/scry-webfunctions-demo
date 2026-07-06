@@ -1,0 +1,26 @@
+[package]
+name = "blastp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.36"
+
+# rust-bio ships the exact algorithms we need — a well-tested Smith-Waterman
+# with affine gaps under bio::alignment::pairwise, and the canonical BLOSUM62
+# matrix under bio::scores::blosum62. Skip the numerous default features
+# whose transitive dependencies (statrs, ndarray, etc.) either don't compile
+# to wasm32-wasip1 or bloat the .wasm needlessly for what we do here.
+[dependencies.bio]
+version = "2.0"
+default-features = false
+
+[package.metadata.component]
+package = "tegmentum:scry-demo-blastp"
+
+[package.metadata.component.target]
+path = "wit"
+world = "webfunction"

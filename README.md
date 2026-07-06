@@ -17,8 +17,33 @@ of Python.** No separate endpoint, no HTTP hop, one sandboxed `.wasm` that
 runs unchanged under [Stardog](https://github.com/tegmentum/stardog-webfunction-plugin),
 [Apache Jena](https://github.com/tegmentum/jena-webfunction-plugin), and
 [Eclipse RDF4J](https://github.com/tegmentum/rdf4j-webfunction-plugin). The
-runner in this repo uses RDF4J's in-JVM `MemoryStore` for the shortest path
-from `mvn exec:java` to output.
+runner uses RDF4J's in-JVM `MemoryStore` for the shortest path from
+`mvn exec:java` to output.
+
+## What's the alignment?
+
+The default component is **actual BLASTP**, not an approximation:
+
+- Gapped local alignment via [rust-bio](https://crates.io/crates/bio)'s
+  Smith-Waterman aligner (`bio::alignment::pairwise::Aligner`).
+- Standard **BLOSUM62** substitution matrix
+  (`bio::scores::blosum62`).
+- NCBI BLASTP default affine gap penalties: open=-11, extend=-1.
+- Karlin-Altschul statistics with canonical BLOSUM62/11/1 constants
+  (K=0.041, λ=0.267) → bit score and E-value on the exact same scale
+  NCBI blastp reports.
+
+BLAST is a *heuristic* for exactly this local-alignment problem, useful
+when scanning gigabyte databases. For candidate sets small enough to fit
+in a SPARQL query (dozens to thousands of sequences), running the exact
+algorithm is both faster than BLAST-the-heuristic and *more accurate*.
+The component is 130 lines of Rust plus rust-bio's aligner — reusable
+outside this demo by anyone who has two amino-acid sequences and wants
+BLASTP-shape output.
+
+A second component, `kmer_similarity`, is included as a naive baseline
+(k=3 Jaccard) to show the algorithm choice matters — it drops close
+homologs like α that BLAST catches clean.
 
 ## The query
 
@@ -28,46 +53,46 @@ PREFIX bio:  <http://tegmentum.ai/ns/scry-demo/bio/>
 PREFIX up:   <http://purl.uniprot.org/uniprot/>
 PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
 
-SELECT ?homolog ?homologName ?similarity
+SELECT ?homolog ?homologName ?bitScore
        (COUNT(DISTINCT ?sharedTissue) AS ?coexpressedTissueCount)
 WHERE {
-    up:P68871 bio:sequence ?querySeq .            # hemoglobin β
+    up:P68871 bio:sequence ?querySeq .                # hemoglobin β
     ?homolog a bio:Protein ;
              rdfs:label ?homologName ;
              bio:sequence ?candidateSeq .
     FILTER (?homolog != up:P68871)
 
-    # WebAssembly component — k-mer Jaccard similarity in the same JVM.
-    BIND (xsd:decimal(wf:call(<file:.../kmer_similarity.wasm>,
-                              ?querySeq, ?candidateSeq)) AS ?similarity)
-    FILTER (?similarity >= 0.0)
+    # WebAssembly component — BLASTP bit score in the same JVM.
+    BIND (xsd:decimal(wf:call(<file:.../blastp.wasm>,
+                              ?querySeq, ?candidateSeq)) AS ?bitScore)
+    FILTER (?bitScore >= "20"^^xsd:decimal)
 
     up:P68871 bio:expressedIn ?sharedTissue .
     ?homolog  bio:expressedIn ?sharedTissue .
 }
-GROUP BY ?homolog ?homologName ?similarity
-ORDER BY DESC(?similarity)
+GROUP BY ?homolog ?homologName ?bitScore
+ORDER BY DESC(?bitScore)
 ```
 
 Sample output on the shipped synthetic dataset:
 
 ```
-homolog                                    name                             similarity   co-expressed tissues
+homolog                                    name                             bit-score    co-expressed tissues
 --------------------------------------------------------------------------------------------------------------
-http://purl.uniprot.org/uniprot/P02042     Hemoglobin subunit delta         0.7256       1
-http://purl.uniprot.org/uniprot/P69891     Hemoglobin subunit gamma-1       0.3028       2
-http://purl.uniprot.org/uniprot/P69905     Hemoglobin subunit alpha         0.0606       2
+http://purl.uniprot.org/uniprot/P02042     Hemoglobin subunit delta         284.65       1
+http://purl.uniprot.org/uniprot/P69891     Hemoglobin subunit gamma-1       230.72       2
+http://purl.uniprot.org/uniprot/P69905     Hemoglobin subunit alpha         114.39       2
 ```
 
-Interpretation: delta is β's near-clone (99% conserved in the region we
-score), γ-1 is the fetal analog, and α forms adult hemoglobin
-heterotetramers with β so they must be co-expressed — but α diverges
-enough in sequence that raw 3-mer Jaccard barely picks it up. That last
-point is the paper's exact argument for embedding procedures at query
-time: use whatever scoring you need, not what your triplestore's built-in
-functions provide. Swap `kmer_similarity` for a real BLAST-in-Rust
-component (or, in the paper's version, a Python wrapper around
-`blastp`) and α climbs to the top.
+Interpretation matches the biology:
+- **δ (284 bits)** — near-identical to β at the sequence level (~93% identity), same expression profile.
+- **γ-1 (230 bits)** — the fetal analog of β, high identity in the globin fold.
+- **α (114 bits)** — the tetramer partner of β. α and β have only ~45% sequence
+  identity but co-assemble to form adult hemoglobin, so they must be co-expressed
+  in the same tissues (bone marrow, fetal liver). BLASTP catches this cleanly;
+  the naive k-mer baseline scores it at 0.06 Jaccard and misses it.
+
+Myoglobin and insulin drop out entirely — they share no tissues with β.
 
 ## Why webfunctions instead of SCRY?
 
@@ -84,19 +109,22 @@ scalability. Compared point-by-point:
 | Sandboxing | Python: none by default (arbitrary code) | Wasm: capability-based, memory-safe, no filesystem/network unless granted |
 | Determinism | Python: none guaranteed | Wasm: pure computation is bit-for-bit reproducible |
 
-The one thing SCRY has that this doesn't: SCRY procedures can shell out to
-existing native binaries (e.g. the actual `blastp` binary). Webfunctions
+The one thing SCRY has that this doesn't: SCRY procedures can shell out
+to existing native binaries (e.g. the actual `blastp` binary). Webfunctions
 components can't do that without WASI process spawning, which isn't
-stable yet. For the common case — pure computation, or a library that
-compiles to Wasm — webfunctions wins on every other axis.
+stable yet. So instead of wrapping `blastp` we bring an alignment
+implementation into the sandbox — rust-bio's Smith-Waterman, which
+implements the exact problem BLAST heuristically approximates.
 
 ## Running
 
 Requires: Java 21, Maven, `cargo`, `cargo component`.
 
 ```bash
-# 1. Build the wasm component.
-cd src/main/rust/kmer_similarity
+# 1. Build the wasm components.
+cd src/main/rust/blastp
+cargo component build --release
+cd ../kmer_similarity   # optional baseline
 cargo component build --release
 cd -
 
@@ -105,21 +133,28 @@ cd -
 #    the demo pom depends on ai.tegmentum.rdf4j:webfunction:0.1.0-SNAPSHOT.
 mvn exec:java
 
-# Optional: threshold the results.
-mvn exec:java -Dwf.threshold=0.15
+# Optional: raise the bit-score threshold (~50 = strong, ~100 = highly).
+mvn exec:java -Dwf.threshold=50
+
+# Optional: run the naive baseline component instead.
+mvn exec:java -Dwf.blastp.wasm=src/main/rust/kmer_similarity/target/wasm32-wasip1/release/kmer_similarity.wasm -Dwf.threshold=0
 ```
 
 ## Layout
 
 ```
 src/main/
-├── java/ai/tegmentum/scry/BioDemo.java   # RDF4J runner
+├── java/ai/tegmentum/scry/BioDemo.java    # RDF4J runner
 ├── resources/
-│   ├── data/proteins.ttl                 # Synthetic hemoglobin + tissue graph
-│   └── queries/coexpression.rq           # The paper's Figure-3 query, adapted
-└── rust/kmer_similarity/                 # k=3 Jaccard component (cargo component)
-    ├── src/lib.rs
-    └── wit/webfunction.wit               # stardog:webfunction@0.2.0
+│   ├── data/proteins.ttl                  # Synthetic hemoglobin + tissue graph
+│   └── queries/coexpression.rq            # The paper's Figure-3 query, adapted
+└── rust/
+    ├── blastp/                            # rust-bio Smith-Waterman + BLOSUM62
+    │   ├── src/lib.rs
+    │   └── wit/webfunction.wit
+    └── kmer_similarity/                   # Naive k=3 Jaccard baseline
+        ├── src/lib.rs
+        └── wit/webfunction.wit
 ```
 
 ## Dataset caveats
@@ -138,3 +173,4 @@ reproducible and human-readable. **Do not use as a substitute for HPA.**
   [tegmentum/jena-webfunction-plugin](https://github.com/tegmentum/jena-webfunction-plugin),
   [tegmentum/rdf4j-webfunction-plugin](https://github.com/tegmentum/rdf4j-webfunction-plugin)
 - Wasm runtime: [tegmentum/webassembly4j](https://github.com/tegmentum/webassembly4j) (wasmtime provider)
+- Alignment library: [rust-bio](https://crates.io/crates/bio)
