@@ -1,0 +1,53 @@
+@prefix bio:  <http://tegmentum.ai/ns/scry-demo/bio/> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix up:   <http://purl.uniprot.org/uniprot/> .
+
+# Minimal, self-contained protein + tissue-expression graph inspired by the
+# bioinformatics use case in Stringer et al. (SCRY, CEUR Vol-1795, paper 30).
+# Sequences are the real UniProt canonical forms; tissue-expression triples are
+# hand-curated approximations of Human Protein Atlas RNA-expression evidence
+# for the express purpose of making the demo query's result set reproducible
+# and interpretable, NOT a substitute for HPA.
+
+# Query protein: hemoglobin subunit beta.
+up:P68871 a bio:Protein ;
+    rdfs:label "Hemoglobin subunit beta" ;
+    bio:sequence "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH" ;
+    bio:expressedIn bio:tissue_bone_marrow, bio:tissue_fetal_liver .
+
+# Close homologs: alpha, delta, gamma-1 (all hemoglobin subunits).
+up:P69905 a bio:Protein ;
+    rdfs:label "Hemoglobin subunit alpha" ;
+    bio:sequence "MVLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR" ;
+    bio:expressedIn bio:tissue_bone_marrow, bio:tissue_fetal_liver, bio:tissue_blood .
+
+up:P02042 a bio:Protein ;
+    rdfs:label "Hemoglobin subunit delta" ;
+    bio:sequence "MVHLTPEEKTAVNALWGKVNVDAVGGEALGRLLVVYPWTQRFFESFGDLSSPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFSQLSELHCDKLHVDPENFRLLGNVLVCVLARNFGKEFTPQMQAAYQKVVAGVANALAHKYH" ;
+    bio:expressedIn bio:tissue_bone_marrow .
+
+up:P69891 a bio:Protein ;
+    rdfs:label "Hemoglobin subunit gamma-1" ;
+    bio:sequence "MGHFTEEDKATITSLWGKVNVEDAGGETLGRLLVVYPWTQRFFDSFGNLSSASAIMGNPKVKAHGKKVLTSLGDAIKHLDDLKGTFAQLSELHCDKLHVDPENFKLLGNVLVTVLAIHFGKEFTPEVQASWQKMVTAVASALSSRYH" ;
+    bio:expressedIn bio:tissue_fetal_liver, bio:tissue_bone_marrow .
+
+# Distant relative: myoglobin (same globin fold, different sequence).
+up:P02144 a bio:Protein ;
+    rdfs:label "Myoglobin" ;
+    bio:sequence "MGLSDGEWQLVLNVWGKVEADIPGHGQEVLIRLFKGHPETLEKFDKFKHLKSEDEMKASEDLKKHGATVLTALGGILKKKGHHEAEIKPLAQSHATKHKIPVKYLEFISECIIQVLQSKHPGDFGADAQGAMNKALELFRKDMASNYKELGFQG" ;
+    bio:expressedIn bio:tissue_skeletal_muscle, bio:tissue_cardiac_muscle .
+
+# Negative control: insulin (unrelated).
+up:P01308 a bio:Protein ;
+    rdfs:label "Insulin (preproinsulin)" ;
+    bio:sequence "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTRREAEDLQVGQVELGGGPGAGSLQPLALEGSLQKRGIVEQCCTSICSLYQLENYCN" ;
+    bio:expressedIn bio:tissue_pancreas .
+
+# Tissues (labels for the human reader).
+bio:tissue_bone_marrow      rdfs:label "bone marrow" .
+bio:tissue_fetal_liver      rdfs:label "fetal liver" .
+bio:tissue_blood            rdfs:label "peripheral blood" .
+bio:tissue_skeletal_muscle  rdfs:label "skeletal muscle" .
+bio:tissue_cardiac_muscle   rdfs:label "cardiac muscle" .
+bio:tissue_pancreas         rdfs:label "pancreas" .

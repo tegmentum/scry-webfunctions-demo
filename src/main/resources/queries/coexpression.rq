@@ -1,0 +1,38 @@
+# Bioinformatics use case from Stringer et al. (SCRY, CEUR Vol-1795, paper 30),
+# ported to webfunctions. Given a query protein (hemoglobin beta), find
+# homologs by sequence similarity (kmer_similarity.wasm) and count how many
+# tissues each homolog shares with the query.
+#
+# The query protein URI, wasm URL, and similarity threshold are substituted
+# at run time by BioDemo.java — real SCRY does the same substitution before
+# federating to its Python endpoint.
+
+PREFIX wf:   <http://tegmentum.ai/ns/webfunction/>
+PREFIX bio:  <http://tegmentum.ai/ns/scry-demo/bio/>
+PREFIX up:   <http://purl.uniprot.org/uniprot/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+
+SELECT ?homolog ?homologName ?similarity (COUNT(DISTINCT ?sharedTissue) AS ?coexpressedTissueCount)
+WHERE {
+    # Query protein and its sequence.
+    ${QUERY_PROTEIN} bio:sequence ?querySeq .
+
+    # Every OTHER protein as a homology candidate.
+    ?homolog a bio:Protein ;
+             rdfs:label ?homologName ;
+             bio:sequence ?candidateSeq .
+    FILTER (?homolog != ${QUERY_PROTEIN})
+
+    # Score similarity via the wasm component. Returns an xsd:decimal in [0, 1].
+    BIND (xsd:decimal(wf:call(<${WASM_URL}>, ?querySeq, ?candidateSeq)) AS ?similarity)
+    FILTER (?similarity >= ${THRESHOLD})
+
+    # Tissues co-expressed between query and candidate (may be zero if no
+    # tissue overlaps — LEFT-joined-optional-shape would surface those too,
+    # but the paper's Figure-3 output shows the intersection, so INNER JOIN it).
+    ${QUERY_PROTEIN} bio:expressedIn ?sharedTissue .
+    ?homolog         bio:expressedIn ?sharedTissue .
+}
+GROUP BY ?homolog ?homologName ?similarity
+ORDER BY DESC(?similarity)

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ai.tegmentum.scry</groupId>
+    <artifactId>scry-webfunctions-demo</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+
+    <name>SCRY Webfunctions Demo</name>
+    <description>
+        WebAssembly-component reimplementation of the bioinformatics use case
+        from Stringer et al. (SCRY, CEUR Vol-1795, paper 30), running on an
+        in-JVM RDF4J MemoryStore with the tegmentum rdf4j-webfunction-plugin.
+    </description>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <rdf4j.version>6.0.0</rdf4j.version>
+        <rdf4j.webfunction.version>0.1.0-SNAPSHOT</rdf4j.webfunction.version>
+    </properties>
+
+    <dependencies>
+        <!-- RDF4J core: MemoryStore + repository + SPARQL. -->
+        <dependency>
+            <groupId>org.eclipse.rdf4j</groupId>
+            <artifactId>rdf4j-repository-sail</artifactId>
+            <version>${rdf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.rdf4j</groupId>
+            <artifactId>rdf4j-sail-memory</artifactId>
+            <version>${rdf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.rdf4j</groupId>
+            <artifactId>rdf4j-rio-turtle</artifactId>
+            <version>${rdf4j.version}</version>
+        </dependency>
+
+        <!-- The plugin. Auto-registers wf:call via META-INF/services. -->
+        <dependency>
+            <groupId>ai.tegmentum.rdf4j</groupId>
+            <artifactId>webfunction</artifactId>
+            <version>${rdf4j.webfunction.version}</version>
+        </dependency>
+
+        <!-- Basic logging so RDF4J's warnings don't disappear silently. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+            <plugin>
+                <!-- Provides `mvn exec:java` to run BioDemo end-to-end. -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <mainClass>ai.tegmentum.scry.BioDemo</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
