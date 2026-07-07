@@ -1,5 +1,7 @@
 package ai.tegmentum.scry;
 
+import ai.tegmentum.rdf4j.webfunctions.WfEvaluationStrategyFactory;
+
 import org.eclipse.rdf4j.query.BindingSet;
 import org.eclipse.rdf4j.query.TupleQueryResult;
 import org.eclipse.rdf4j.repository.RepositoryConnection;
@@ -15,63 +17,57 @@ import java.util.Objects;
 
 /**
  * Reproduces the bioinformatics use case from Stringer et al. (SCRY, CEUR
- * Vol-1795, paper 30) using the tegmentum rdf4j-webfunction-plugin. Given
- * hemoglobin subunit beta as the query protein, computes k-mer Jaccard
- * similarity against every other protein in the graph via the WASM
- * component, then joins with tissue expression data to count co-expressed
- * tissues per homolog.
+ * Vol-1795, paper 30) using the tegmentum rdf4j-webfunction-plugin. Two
+ * demos in one run:
+ *
+ * <ol>
+ *   <li>{@code coexpression.rq} — BLAST hemoglobin β against every other
+ *       protein via {@code blastp.wasm} (rust-bio Smith-Waterman + BLOSUM62 +
+ *       Karlin-Altschul stats) and count tissues shared with each homolog.
+ *       Uses the {@code wf:call} filter form (single-value output).</li>
+ *   <li>{@code protparam.rq} — Compute biochemical properties (length, MW,
+ *       theoretical pI, GRAVY) for every protein via {@code protparam.wasm}.
+ *       Uses the {@code wf:call} tuple-function form (multi-var output)
+ *       via {@link WfEvaluationStrategyFactory}.</li>
+ * </ol>
  *
  * <p>The paper's version federated to a separate Python SCRY endpoint over
  * SPARQL SERVICE; this version runs the same shape entirely in-process, with
- * a sandboxed WebAssembly component invoked via {@code wf:call}. No HTTP,
- * no separate process, one .wasm binary portable across Stardog / Jena /
- * RDF4J unchanged.
+ * sandboxed WebAssembly components invoked via {@code wf:call}. No HTTP,
+ * no separate process, one {@code .wasm} binary per procedure portable
+ * across Stardog / Jena / RDF4J unchanged.
  */
 public final class BioDemo {
 
     private static final String QUERY_PROTEIN = "<http://purl.uniprot.org/uniprot/P68871>";
-    // BLASTP bit-score threshold. ~20 is weakly significant, ~50 strongly. The
-    // demo default of 20 keeps distant hemoglobin homologs visible; override
-    // via -Dwf.threshold=... to raise the bar.
     private static final String THRESHOLD_LITERAL =
             "\"" + System.getProperty("wf.threshold", "20")
                     + "\"^^<http://www.w3.org/2001/XMLSchema#decimal>";
 
     public static void main(final String[] args) throws Exception {
-        final Path wasm = locateWasm();
-        final String query = renderQuery(wasm);
-
-        final SailRepository repo = new SailRepository(new MemoryStore());
-        repo.init();
+        final SailRepository repo = openRepo();
         try {
             loadData(repo);
-            runQuery(repo, query, System.out);
+            runCoexpression(repo, System.out);
+            System.out.println();
+            runProtparam(repo, System.out);
         } finally {
             repo.shutDown();
         }
     }
 
-    private static Path locateWasm() {
-        // -Dwf.blastp.wasm=... points at whatever the caller built. Falls
-        // back to the in-tree cargo-component output.
-        final String override = System.getProperty("wf.blastp.wasm");
-        if (override != null && !override.isBlank()) {
-            return Path.of(override).toAbsolutePath();
-        }
-        return Path.of("src/main/rust/blastp/target/wasm32-wasip1/release/blastp.wasm")
-                .toAbsolutePath();
-    }
-
-    private static String renderQuery(final Path wasm) throws Exception {
-        try (InputStream in = Objects.requireNonNull(
-                BioDemo.class.getResourceAsStream("/queries/coexpression.rq"),
-                "coexpression.rq not on classpath")) {
-            final String template = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            return template
-                    .replace("${QUERY_PROTEIN}", QUERY_PROTEIN)
-                    .replace("${WASM_URL}", wasm.toUri().toString())
-                    .replace("${THRESHOLD}", THRESHOLD_LITERAL);
-        }
+    /**
+     * MemoryStore configured with {@link WfEvaluationStrategyFactory} so both
+     * the {@code wf:call} filter form (delegates to the standard
+     * FunctionRegistry) and the tuple-function form
+     * {@code (args) wf:call (?vars)} work in the same session.
+     */
+    private static SailRepository openRepo() {
+        final MemoryStore store = new MemoryStore();
+        store.setEvaluationStrategyFactory(new WfEvaluationStrategyFactory(null));
+        final SailRepository repo = new SailRepository(store);
+        repo.init();
+        return repo;
     }
 
     private static void loadData(final SailRepository repo) throws Exception {
@@ -83,17 +79,22 @@ public final class BioDemo {
         }
     }
 
-    private static void runQuery(final SailRepository repo,
-                                 final String query,
-                                 final PrintStream out) {
+    private static void runCoexpression(final SailRepository repo, final PrintStream out) throws Exception {
+        final Path wasm = locateWasm("wf.blastp.wasm",
+                "src/main/rust/blastp/target/wasm32-wasip1/release/blastp.wasm");
+        final String query = renderQuery("/queries/coexpression.rq", wasm)
+                .replace("${QUERY_PROTEIN}", QUERY_PROTEIN)
+                .replace("${THRESHOLD}", THRESHOLD_LITERAL);
+
+        out.println("=== BLASTP hemoglobin-β homologs + tissue coexpression ===");
+        out.printf("%-42s %-32s %-12s %s%n",
+                "homolog", "name", "bit-score", "co-expressed tissues");
+        out.println("-".repeat(110));
         try (RepositoryConnection conn = repo.getConnection();
-             TupleQueryResult result = conn.prepareTupleQuery(query).evaluate()) {
-            out.printf("%-42s %-32s %-12s %s%n",
-                    "homolog", "name", "bit-score", "co-expressed tissues");
-            out.println("-".repeat(110));
+             TupleQueryResult r = conn.prepareTupleQuery(query).evaluate()) {
             int rows = 0;
-            while (result.hasNext()) {
-                final BindingSet row = result.next();
+            while (r.hasNext()) {
+                final BindingSet row = r.next();
                 out.printf("%-42s %-32s %-12s %s%n",
                         row.getValue("homolog").stringValue(),
                         row.getValue("homologName").stringValue(),
@@ -104,6 +105,46 @@ public final class BioDemo {
             if (rows == 0) {
                 out.println("(no homologs above the similarity threshold with any shared tissue)");
             }
+        }
+    }
+
+    private static void runProtparam(final SailRepository repo, final PrintStream out) throws Exception {
+        final Path wasm = locateWasm("wf.protparam.wasm",
+                "src/main/rust/protparam/target/wasm32-wasip1/release/protparam.wasm");
+        final String query = renderQuery("/queries/protparam.rq", wasm);
+
+        out.println("=== Biochemical properties (protparam) ===");
+        out.printf("%-32s %8s %12s %8s %8s%n",
+                "protein", "length", "MW (Da)", "pI", "GRAVY");
+        out.println("-".repeat(80));
+        try (RepositoryConnection conn = repo.getConnection();
+             TupleQueryResult r = conn.prepareTupleQuery(query).evaluate()) {
+            while (r.hasNext()) {
+                final BindingSet row = r.next();
+                out.printf("%-32s %8s %12s %8s %8s%n",
+                        row.getValue("name").stringValue(),
+                        row.getValue("length").stringValue(),
+                        row.getValue("molecularWeight").stringValue(),
+                        row.getValue("theoreticalPi").stringValue(),
+                        row.getValue("gravy").stringValue());
+            }
+        }
+    }
+
+    private static Path locateWasm(final String propertyKey, final String defaultRelative) {
+        final String override = System.getProperty(propertyKey);
+        if (override != null && !override.isBlank()) {
+            return Path.of(override).toAbsolutePath();
+        }
+        return Path.of(defaultRelative).toAbsolutePath();
+    }
+
+    private static String renderQuery(final String resourcePath, final Path wasm) throws Exception {
+        try (InputStream in = Objects.requireNonNull(
+                BioDemo.class.getResourceAsStream(resourcePath),
+                resourcePath + " not on classpath")) {
+            final String template = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return template.replace("${WASM_URL}", wasm.toUri().toString());
         }
     }
 }

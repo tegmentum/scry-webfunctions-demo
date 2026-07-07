@@ -1,0 +1,21 @@
+# Biochemical property summary via the protparam.wasm component. Uses the
+# RDF4J tuple-function magic-property syntax — the single wf:call yields
+# four output variables per protein in one round-trip, unlike the filter
+# form used in coexpression.rq which returns only the first output.
+
+PREFIX wf:   <http://tegmentum.ai/ns/webfunction/>
+PREFIX bio:  <http://tegmentum.ai/ns/scry-demo/bio/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?name ?length ?molecularWeight ?theoreticalPi ?gravy
+WHERE {
+    ?protein a bio:Protein ;
+             rdfs:label ?name ;
+             bio:sequence ?seq .
+
+    # Tuple-function invocation via the WfCallTupleFunctionOptimizer.
+    # Subject is the RDF collection of args: (wasm-url, sequence).
+    # Object is the RDF collection of result vars.
+    (<${WASM_URL}> ?seq) wf:call (?length ?molecularWeight ?theoreticalPi ?gravy) .
+}
+ORDER BY ?name

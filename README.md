@@ -20,9 +20,21 @@ runs unchanged under [Stardog](https://github.com/tegmentum/stardog-webfunction-
 runner uses RDF4J's in-JVM `MemoryStore` for the shortest path from
 `mvn exec:java` to output.
 
-## What's the alignment?
+## The bio component family
 
-The default component is **actual BLASTP**, not an approximation:
+Two components ship in this repo, both callable from any of the three
+webfunction plugins:
+
+| Component | Role | SPARQL surface |
+|---|---|---|
+| `blastp.wasm` | BLASTP-shape local alignment: `bio::alignment::pairwise::Aligner` + BLOSUM62 + Karlin-Altschul stats. Returns bit score, raw score, E-value, percent identity, alignment length. | `wf:call` filter form for the bit score, tuple form for all five outputs |
+| `protparam.wasm` | Expasy-ProtParam-shape biochemical properties: average MW, Bjellqvist pI via bisection, Kyte-Doolittle GRAVY, length. | Tuple form so all four outputs land in one query |
+
+Together they let a single SPARQL query rank homologs by sequence
+similarity **and** characterise their biochemistry — the classic
+paper-figure workflow. See `src/main/resources/queries/` for both.
+
+## Actual BLASTP, not an approximation
 
 - Gapped local alignment via [rust-bio](https://crates.io/crates/bio)'s
   Smith-Waterman aligner (`bio::alignment::pairwise::Aligner`).
@@ -74,25 +86,43 @@ GROUP BY ?homolog ?homologName ?bitScore
 ORDER BY DESC(?bitScore)
 ```
 
-Sample output on the shipped synthetic dataset:
+Sample output on the fetched UniProt sequences + HPA tissue expression:
 
 ```
+=== BLASTP hemoglobin-β homologs + tissue coexpression ===
 homolog                                    name                             bit-score    co-expressed tissues
 --------------------------------------------------------------------------------------------------------------
 http://purl.uniprot.org/uniprot/P02042     Hemoglobin subunit delta         284.65       1
-http://purl.uniprot.org/uniprot/P69891     Hemoglobin subunit gamma-1       230.72       2
-http://purl.uniprot.org/uniprot/P69905     Hemoglobin subunit alpha         114.39       2
+http://purl.uniprot.org/uniprot/P69891     Hemoglobin subunit gamma-1       229.56       1
+http://purl.uniprot.org/uniprot/P69905     Hemoglobin subunit alpha         114.39       34
+http://purl.uniprot.org/uniprot/P02144     Myoglobin                        46.98        6
+
+=== Biochemical properties (protparam) ===
+protein                            length      MW (Da)       pI    GRAVY
+--------------------------------------------------------------------------------
+Hemoglobin subunit alpha              142     15257.55     8.73     0.05
+Hemoglobin subunit beta               147     15998.41     6.82     0.01
+Hemoglobin subunit delta              147     16055.48     7.99    -0.05
+Hemoglobin subunit gamma-1            147     16128.41     6.72    -0.12
+Insulin (preproinsulin)               110     11980.91     5.22     0.19
+Myoglobin                             154     17183.81     7.29    -0.48
 ```
 
 Interpretation matches the biology:
-- **δ (284 bits)** — near-identical to β at the sequence level (~93% identity), same expression profile.
-- **γ-1 (230 bits)** — the fetal analog of β, high identity in the globin fold.
-- **α (114 bits)** — the tetramer partner of β. α and β have only ~45% sequence
-  identity but co-assemble to form adult hemoglobin, so they must be co-expressed
-  in the same tissues (bone marrow, fetal liver). BLASTP catches this cleanly;
-  the naive k-mer baseline scores it at 0.06 Jaccard and misses it.
+- **δ (284 bits, 1 tissue)** — near-identical to β at the sequence level
+  (~93% identity), expressed above nTPM 100 only in bone marrow.
+- **γ-1 (229 bits, 1 tissue)** — the *fetal* analog of β; HPA shows it
+  above nTPM 100 only in placenta, correctly the one tissue it shares
+  with β's own placental expression.
+- **α (114 bits, 34 tissues)** — the tetramer partner of β. α and β have
+  only ~45% sequence identity but co-assemble to form adult hemoglobin,
+  so RBCs — which circulate everywhere — carry both wherever they go.
+  BLASTP catches the sequence relationship cleanly; the naive k-mer
+  baseline scores it at 0.06 Jaccard and misses it entirely.
+- **Myoglobin (47 bits, 6 tissues)** — weakly significant hit; shares the
+  globin fold, muscle-tissue overlap driven by residual blood.
 
-Myoglobin and insulin drop out entirely — they share no tissues with β.
+Insulin (pancreas-only) drops out — no shared tissues with β.
 
 ## Why webfunctions instead of SCRY?
 
@@ -122,11 +152,9 @@ Requires: Java 21, Maven, `cargo`, `cargo component`.
 
 ```bash
 # 1. Build the wasm components.
-cd src/main/rust/blastp
-cargo component build --release
-cd ../kmer_similarity   # optional baseline
-cargo component build --release
-cd -
+for c in blastp protparam kmer_similarity; do
+    ( cd "src/main/rust/$c" && cargo component build --release )
+done
 
 # 2. Run the demo. This uses the tegmentum/rdf4j-webfunction-plugin, so
 #    that repo needs to be `mvn install`-ed into your local ~/.m2 first;
@@ -152,18 +180,27 @@ src/main/
     ├── blastp/                            # rust-bio Smith-Waterman + BLOSUM62
     │   ├── src/lib.rs
     │   └── wit/webfunction.wit
+    ├── protparam/                         # MW / pI / GRAVY / length
+    │   ├── src/lib.rs
+    │   └── wit/webfunction.wit
     └── kmer_similarity/                   # Naive k=3 Jaccard baseline
         ├── src/lib.rs
         └── wit/webfunction.wit
 ```
 
-## Dataset caveats
+## Data
 
-`proteins.ttl` holds real UniProt canonical sequences (P68871, P69905,
-P02042, P69891, P02144, P01308) plus hand-curated tissue-expression
-triples that approximate the Human Protein Atlas RNA-expression evidence.
-The tissue set is deliberately small so the query's result table is
-reproducible and human-readable. **Do not use as a substitute for HPA.**
+`proteins.ttl` is regenerated by `scripts/build-data.sh`, which:
+
+- Fetches canonical UniProt FASTA sequences from `rest.uniprot.org` (CC BY 4.0).
+- Downloads the HPA `rna_tissue_consensus.tsv.zip` from
+  proteinatlas.org (CC BY-SA 3.0) and filters each protein's tissue
+  expression to nTPM ≥ 100 (roughly the HPA "elevated" cutoff — this
+  keeps the query's coexpression counts biologically meaningful rather
+  than dominated by circulation-level background).
+
+The generated file is committed so `mvn exec:java` works offline.
+Re-run the script to refresh against upstream.
 
 ## Related
 
