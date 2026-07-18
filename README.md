@@ -166,6 +166,13 @@ mvn exec:java -Dwf.threshold=50
 
 # Optional: run the naive baseline component instead.
 mvn exec:java -Dwf.blastp.wasm=src/main/rust/kmer_similarity/target/wasm32-wasip1/release/kmer_similarity.wasm -Dwf.threshold=0
+
+# Optional: override the wasm component memory ceiling (default 64 MB, set
+# via the wf.memory.max.bytes project property; forwarded to the plugin as
+# webfunctions.memory.max.bytes). blastp.wasm's minimum linear memory is
+# ~1.1 MB and grows during alignment, so the wasmtime built-in default is
+# not enough — the pom default handles this. Raise for larger inputs.
+mvn exec:java -Dwf.memory.max.bytes=134217728   # 128 MB
 ```
 
 ## Layout

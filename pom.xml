@@ -21,6 +21,19 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <rdf4j.version>6.0.0</rdf4j.version>
         <rdf4j.webfunction.version>0.1.0-SNAPSHOT</rdf4j.webfunction.version>
+        <!--
+            Default memory ceiling for the shared wasmtime component engine
+            (webfunctions.memory.max.bytes, consumed by
+            ai.tegmentum.rdf4j.webfunctions.WebFunctionConfig#buildEngine).
+            blastp.wasm declares a minimum linear memory of 17 pages
+            (~1.1 MB) and grows further during Smith-Waterman alignment, so
+            wasmtime's built-in default (which vetoes the module at
+            instantiate with "memory minimum size of N pages exceeds
+            memory limits") is not enough. 64 MB is generous headroom for
+            all three bio components in this demo. Override on the CLI with
+            -Dwf.memory.max.bytes=&lt;bytes&gt;.
+        -->
+        <wf.memory.max.bytes>67108864</wf.memory.max.bytes>
     </properties>
 
     <dependencies>
@@ -70,6 +83,21 @@
                 <version>3.5.0</version>
                 <configuration>
                     <mainClass>ai.tegmentum.scry.BioDemo</mainClass>
+                    <!--
+                        exec:java runs in-process, so <systemProperties>
+                        entries are pushed onto System via System.setProperty
+                        before BioDemo.main. The value indirects through the
+                        wf.memory.max.bytes project property so a CLI
+                        override (-Dwf.memory.max.bytes=...) wins over this
+                        default — Maven expands the ${...} against the
+                        effective property map, which -D-on-the-CLI clobbers.
+                    -->
+                    <systemProperties>
+                        <systemProperty>
+                            <key>webfunctions.memory.max.bytes</key>
+                            <value>${wf.memory.max.bytes}</value>
+                        </systemProperty>
+                    </systemProperties>
                 </configuration>
             </plugin>
         </plugins>
