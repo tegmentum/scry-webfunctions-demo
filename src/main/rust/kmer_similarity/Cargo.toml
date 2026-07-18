@@ -7,11 +7,23 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "0.36"
+# cargo-component 0.21.x + wit-bindgen 0.44 matches what the base +
+# overlay WIT packages target and what the reference host plugins
+# (stardog-webfunction-plugin, rdf4j-webfunction-plugin) speak.
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 
 [package.metadata.component]
-package = "tegmentum:scry-demo"
+package = "tegmentum:scry-demo-kmer-similarity"
 
+# Target the Stardog overlay world (stardog:webfunction/stardog-extension
+# @0.3.0). It `include`s the base sparql-extension world (filter +
+# aggregate + property-function surfaces from tegmentum:webfunction@0.1.0)
+# and adds Stardog-only planner + doc exports. Plugins that don't consume
+# the Stardog surfaces (RDF4J, Jena, Oxigraph) still see the base surface
+# and ignore the overlay's planner/doc.
 [package.metadata.component.target]
-path = "wit"
-world = "webfunction"
+path = "../../../../wit/overlay"
+world = "stardog-extension"
+
+[package.metadata.component.target.dependencies]
+"tegmentum:webfunction" = { path = "../../../../wit/base" }

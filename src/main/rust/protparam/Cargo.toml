@@ -7,11 +7,18 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "0.36"
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 
 [package.metadata.component]
 package = "tegmentum:scry-demo-protparam"
 
+# Target the Stardog overlay world (stardog:webfunction/stardog-extension
+# @0.3.0). protparam exposes multi-column output only, via the base
+# property-function surface — no meaningful single-scalar filter form for
+# four independent biochemical properties.
 [package.metadata.component.target]
-path = "wit"
-world = "webfunction"
+path = "../../../../wit/overlay"
+world = "stardog-extension"
+
+[package.metadata.component.target.dependencies]
+"tegmentum:webfunction" = { path = "../../../../wit/base" }

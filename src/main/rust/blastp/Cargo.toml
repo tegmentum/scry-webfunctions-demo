@@ -6,21 +6,29 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
-[dependencies]
-wit-bindgen = "0.36"
-
 # rust-bio ships the exact algorithms we need — a well-tested Smith-Waterman
 # with affine gaps under bio::alignment::pairwise, and the canonical BLOSUM62
 # matrix under bio::scores::blosum62. Skip the numerous default features
 # whose transitive dependencies (statrs, ndarray, etc.) either don't compile
 # to wasm32-wasip1 or bloat the .wasm needlessly for what we do here.
-[dependencies.bio]
-version = "2.0"
-default-features = false
+[dependencies]
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+bio = { version = "2.0", default-features = false }
 
 [package.metadata.component]
 package = "tegmentum:scry-demo-blastp"
 
+# Target the Stardog overlay world (stardog:webfunction/stardog-extension
+# @0.3.0). Includes the base sparql-extension world (extension +
+# aggregate + property-function surfaces from tegmentum:webfunction@0.1.0)
+# and adds Stardog-only planner + doc exports. blastp exports:
+#   * extension.call("blastp") -> single decimal (bit score) — for the
+#     filter form used by coexpression.rq.
+#   * property-function.evaluate("blastp") -> 5-column row (bit_score,
+#     raw_score, e_value, identity, align_length) — for the tuple form.
 [package.metadata.component.target]
-path = "wit"
-world = "webfunction"
+path = "../../../../wit/overlay"
+world = "stardog-extension"
+
+[package.metadata.component.target.dependencies]
+"tegmentum:webfunction" = { path = "../../../../wit/base" }

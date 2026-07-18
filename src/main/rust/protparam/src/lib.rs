@@ -13,19 +13,46 @@
 //! sandboxed Wasm component. Complements `blastp` in the demo family: BLAST
 //! finds *which* proteins are similar, protparam characterises *what* they
 //! are like biochemically.
+//!
+//! ## WIT surface (post-migration)
+//!
+//! Under the substrate WIT (`tegmentum:webfunction@0.1.0` base +
+//! `stardog:webfunction@0.3.0` overlay), a filter function returns a single
+//! `term`. protparam has four independent outputs, so it is a
+//! property-function rather than a filter — the base
+//! `property-function.evaluate` interface returns
+//! `list<binding-row>` where each row carries a `list<term>`.
+//!
+//! Consumers reach protparam via the tuple form:
+//!   `(<url> ?seq) wf:call (?length ?molecularWeight ?theoreticalPi ?gravy)`
+//! The host builds `subjects=[?seq]` and expects a one-row result whose
+//! `values` positional order matches the object-side variables.
 
-wit_bindgen::generate!({
-    world: "webfunction",
-    path: "wit",
-});
+#[allow(warnings)]
+mod bindings;
 
-use stardog::webfunction::types::{Accuracy, Binding, Literal};
+use bindings::exports::stardog::webfunction::doc::Guest as DocGuest;
+use bindings::exports::stardog::webfunction::planner::{
+    Accuracy, Cardinality, Guest as PlannerGuest,
+};
+use bindings::exports::tegmentum::webfunction::aggregate::{
+    AggregateDescriptor, AggregateState, Guest as AggregateGuest, GuestAggregateState,
+};
+use bindings::exports::tegmentum::webfunction::extension::{
+    FunctionDescriptor, Guest as ExtensionGuest,
+};
+use bindings::exports::tegmentum::webfunction::property_function::{
+    BindingRow, Guest as PropertyFunctionGuest, PropertyDescriptor,
+};
+use bindings::tegmentum::webfunction::types::{
+    Binding as WitBinding, Literal as WitLiteral, Term as WitTerm,
+};
 
-struct Component;
-
-const XSD_STRING:  &str = "http://www.w3.org/2001/XMLSchema#string";
+const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
 const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
+
+const FUNCTION_NAME: &str = "protparam";
 
 // Average residue masses (Da) — the mass of the amino acid MINUS one water,
 // suitable for polypeptide sum + one water added at the end. Standard values
@@ -69,14 +96,11 @@ fn count(seq: &[u8], target: u8) -> usize {
 }
 
 /// Net charge of a peptide at the given pH. Positive contributions from
-/// N-terminus, R, H, K; negative from C-terminus, D, E, C, Y. Formula per
-/// Henderson-Hasselbalch: charge_positive = 1 / (1 + 10^(pH - pKa)),
-/// charge_negative = -1 / (1 + 10^(pKa - pH)).
+/// N-terminus, R, H, K; negative from C-terminus, D, E, C, Y.
 fn net_charge(seq: &[u8], ph: f64) -> f64 {
     let pos = |pka: f64, n: usize| n as f64 / (1.0 + 10f64.powf(ph - pka));
     let neg = |pka: f64, n: usize| -(n as f64) / (1.0 + 10f64.powf(pka - ph));
 
-    // Terminals present as 1 copy each.
     pos(PKA_NTERM, 1)
         + pos(PKA_ARG, count(seq, b'R'))
         + pos(PKA_HIS, count(seq, b'H'))
@@ -104,90 +128,180 @@ fn isoelectric_point(seq: &[u8]) -> f64 {
     (low + high) / 2.0
 }
 
-fn string_literal(s: &str) -> Value {
-    Value::Literal(Literal { label: s.into(), datatype: XSD_STRING.into(),  lang: None })
-}
-fn decimal_literal(v: f64) -> Value {
-    Value::Literal(Literal { label: format!("{:.2}", v), datatype: XSD_DECIMAL.into(), lang: None })
-}
-fn integer_literal(v: i64) -> Value {
-    Value::Literal(Literal { label: v.to_string(), datatype: XSD_INTEGER.into(), lang: None })
+fn string_literal(s: &str) -> WitTerm {
+    WitTerm::Literal(WitLiteral {
+        value: s.into(),
+        datatype: Some(XSD_STRING.into()),
+        language: None,
+    })
 }
 
-fn sequence_of(arg: &Value) -> Result<&str, String> {
+fn decimal_literal(v: f64) -> WitTerm {
+    WitTerm::Literal(WitLiteral {
+        value: format!("{:.2}", v),
+        datatype: Some(XSD_DECIMAL.into()),
+        language: None,
+    })
+}
+
+fn integer_literal(v: i64) -> WitTerm {
+    WitTerm::Literal(WitLiteral {
+        value: v.to_string(),
+        datatype: Some(XSD_INTEGER.into()),
+        language: None,
+    })
+}
+
+fn sequence_of(arg: &WitTerm) -> Result<&str, String> {
     match arg {
-        Value::Literal(literal) => Ok(literal.label.as_str()),
-        _ => Err("protparam: argument must be a literal sequence".into()),
+        WitTerm::Literal(l) => Ok(l.value.as_str()),
+        WitTerm::NamedNode(_) => Err("protparam: argument must be a literal, got IRI".into()),
+        WitTerm::BlankNode(_) => {
+            Err("protparam: argument must be a literal, got blank node".into())
+        }
+        WitTerm::Triple(_) => {
+            Err("protparam: argument must be a literal, got quoted triple".into())
+        }
     }
 }
 
-impl Guest for Component {
-    fn evaluate(args: Vec<Value>) -> Result<BindingSets, String> {
-        if args.len() != 1 {
+/// Core computation returning the four properties per sequence.
+fn compute(seq: &[u8]) -> (i64, f64, f64, f64) {
+    // Only count residues we recognise so ambiguity codes don't contaminate
+    // MW / GRAVY; sequence length still reports the raw input length.
+    let mut mw = 18.01528_f64; // one water for the terminal H + OH
+    let mut hydropathy_sum = 0.0_f64;
+    let mut recognized = 0_i64;
+    for &b in seq {
+        if let Some(m) = residue_mass(b) {
+            mw += m;
+            recognized += 1;
+        }
+        if let Some(h) = hydropathy(b) {
+            hydropathy_sum += h;
+        }
+    }
+    let gravy = if recognized == 0 {
+        0.0
+    } else {
+        hydropathy_sum / recognized as f64
+    };
+    let pi = isoelectric_point(seq);
+    (seq.len() as i64, mw, pi, gravy)
+}
+
+struct Component;
+
+/// Property-function form: return length, molecular_weight, theoretical_pi,
+/// gravy — one row of four terms per input sequence.
+impl PropertyFunctionGuest for Component {
+    fn register_property_functions() -> Vec<PropertyDescriptor> {
+        vec![PropertyDescriptor {
+            name: FUNCTION_NAME.to_string(),
+            // One input on the subject side: the sequence literal.
+            subject_arity: 1,
+            // Four outputs: length, molecular_weight, theoretical_pi, gravy.
+            object_arity: 4,
+        }]
+    }
+
+    fn evaluate(
+        name: String,
+        subjects: Vec<WitTerm>,
+        _objects: Vec<WitTerm>,
+    ) -> Result<Vec<BindingRow>, String> {
+        if name != FUNCTION_NAME {
             return Err(format!(
-                "protparam: expected 1 arg (sequence), got {}",
-                args.len()
+                "protparam: unknown property function '{name}' (only '{FUNCTION_NAME}')"
             ));
         }
-        let seq_str = sequence_of(&args[0])?;
-        let seq = seq_str.as_bytes();
-
-        // Only count residues we recognise so ambiguity codes don't contaminate
-        // MW / GRAVY; sequence.length still reports the raw input length.
-        let mut mw = 18.01528_f64; // one water for the terminal H + OH
-        let mut hydropathy_sum = 0.0_f64;
-        let mut recognized = 0_i64;
-        for &b in seq {
-            if let Some(m) = residue_mass(b)  { mw += m; recognized += 1; }
-            if let Some(h) = hydropathy(b)    { hydropathy_sum += h; }
+        if subjects.len() != 1 {
+            return Err(format!(
+                "protparam: expected 1 subject arg (sequence), got {}",
+                subjects.len()
+            ));
         }
-        let gravy = if recognized == 0 { 0.0 } else { hydropathy_sum / recognized as f64 };
-        let pi = isoelectric_point(seq);
-
-        Ok(BindingSets {
-            vars: vec![
-                "length".into(),
-                "molecular_weight".into(),
-                "theoretical_pi".into(),
-                "gravy".into(),
+        let seq_str = sequence_of(&subjects[0])?;
+        let (length, mw, pi, gravy) = compute(seq_str.as_bytes());
+        Ok(vec![BindingRow {
+            values: vec![
+                integer_literal(length),
+                decimal_literal(mw),
+                decimal_literal(pi),
+                decimal_literal(gravy),
             ],
-            rows: vec![vec![
-                Binding { name: "length".into(),           value: integer_literal(seq.len() as i64) },
-                Binding { name: "molecular_weight".into(), value: decimal_literal(mw) },
-                Binding { name: "theoretical_pi".into(),   value: decimal_literal(pi) },
-                Binding { name: "gravy".into(),            value: decimal_literal(gravy) },
-            ]],
-        })
-    }
-
-    fn aggregate_step(_args: Vec<Value>, _mult: u64) -> Result<(), String> {
-        Err("protparam: aggregate-step not implemented".into())
-    }
-
-    fn aggregate_finish() -> Result<BindingSets, String> {
-        Err("protparam: aggregate-finish not implemented".into())
-    }
-
-    fn cardinality_estimate(_input: Cardinality, _args: Vec<Value>) -> Result<Cardinality, String> {
-        Ok(Cardinality { value: 1.0, accuracy: Accuracy::Accurate })
-    }
-
-    fn doc() -> BindingSets {
-        BindingSets {
-            vars: vec!["doc".into()],
-            rows: vec![vec![Binding {
-                name: "doc".into(),
-                value: string_literal(
-                    "protparam(sequence) -> (length, molecular_weight, theoretical_pi, gravy). \
-                     Mirrors Expasy ProtParam: average residue masses for MW (+ one H2O for termini), \
-                     Bjellqvist pKa via bisection for the isoelectric point, and \
-                     Kyte-Doolittle hydropathy averaged over the sequence for GRAVY. \
-                     Ambiguity codes (B, Z, X, *) are ignored in MW/GRAVY but still count \
-                     toward the reported sequence length.",
-                ),
-            }]],
-        }
+        }])
     }
 }
 
-export!(Component);
+/// Filter stub — protparam's 4-property output does not collapse to a
+/// meaningful single scalar. Consumers reach it via the property-function
+/// tuple form.
+impl ExtensionGuest for Component {
+    fn register() -> Vec<FunctionDescriptor> {
+        Vec::new()
+    }
+
+    fn call(name: String, _args: Vec<WitTerm>) -> Result<WitTerm, String> {
+        Err(format!(
+            "protparam: no filter function '{name}' — use the property-function form"
+        ))
+    }
+}
+
+/// Aggregate stub.
+impl AggregateGuest for Component {
+    type AggregateState = UnreachableState;
+
+    fn register_aggregates() -> Vec<AggregateDescriptor> {
+        Vec::new()
+    }
+
+    fn new_aggregate(name: String) -> Result<AggregateState, String> {
+        Err(format!(
+            "protparam: unknown aggregate '{name}' (this component provides none)"
+        ))
+    }
+}
+
+pub struct UnreachableState;
+
+impl GuestAggregateState for UnreachableState {
+    fn step(&self, _args: Vec<WitTerm>) -> Result<(), String> {
+        Err("protparam: aggregate state was never constructed".into())
+    }
+
+    fn finish(&self) -> Result<WitTerm, String> {
+        Err("protparam: aggregate state was never constructed".into())
+    }
+}
+
+/// Stardog planner cardinality: protparam is a per-row one-row property
+/// function, so output cardinality matches input.
+impl PlannerGuest for Component {
+    fn cardinality_estimate(input: Cardinality, _args: Vec<WitTerm>) -> Result<Cardinality, String> {
+        Ok(Cardinality {
+            value: input.value,
+            accuracy: Accuracy::Accurate,
+        })
+    }
+}
+
+/// Stardog `doc` self-description.
+impl DocGuest for Component {
+    fn doc() -> Vec<WitBinding> {
+        vec![WitBinding {
+            variable: "doc".to_string(),
+            value: string_literal(
+                "protparam(sequence) -> (length, molecular_weight, theoretical_pi, gravy). \
+                 Mirrors Expasy ProtParam: average residue masses for MW (+ one H2O for \
+                 termini), Bjellqvist pKa via bisection for the isoelectric point, and \
+                 Kyte-Doolittle hydropathy averaged over the sequence for GRAVY. \
+                 Ambiguity codes (B, Z, X, *) are ignored in MW/GRAVY but still count \
+                 toward the reported sequence length.",
+            ),
+        }]
+    }
+}
+
+bindings::export!(Component with_types_in bindings);
